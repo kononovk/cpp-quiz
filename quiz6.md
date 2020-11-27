@@ -39,7 +39,8 @@ struct Inventory {
 ```
 В данном случае возникает ошибка компиляции потому что на момент, когда создается класс Object компилятор ничего не знает о существовании типа `Inventory`. Чтобы этот код скомпилировался нужно перед объявлением поля класса `inventory` "задекларировать" класс `Inventory`:  
 `class Inventory;` (это можно сделать прямо внутри класса `Object`)
-Такое подход называется `Forward declaration` (declaration without complete definition).
+
+Такой подход называется `Forward declaration` (declaration without complete definition).
     
 Но декларации достаточно только для объявления указателя или ссылки на класс:
 ```
