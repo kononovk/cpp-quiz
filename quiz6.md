@@ -95,14 +95,12 @@ public:
 private:
 int* data_;
 };
-}
 ```
 Если пренебречь этой проверкой, то в случае, когда `this == &other` мы не только потрем все данные, которые лежат в `data_`, но и при выходе из скоупа и вызове деструктора вылетим с ошибкой `double free` из-за того, что два раза вызовем `delete` от одного и того же указателя. Исправить эту ошибку можно проверкой `if(this == &other)` или воспользовавшись `copy and swap` идиомой:
 
 ```C++
 // the pass-by-value parameter serves as a temporary
-String & operator = (String s)
-{
+String & operator = (String s) {
    s.swap (*this); // Non-throwing swap
    return *this; // Old resources released when destructor of s is called.
 }
