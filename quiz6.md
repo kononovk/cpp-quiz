@@ -5,6 +5,26 @@
 - Другой класс
 - Метод другого класса
 
+Но чтобы сделать метод другого класса `friend` методом придется использовать `Forward declaration`:
+```C++
+struct B;
+
+struct A {
+    void friend_method(const B& b);
+};
+
+struct B {
+    explicit B(int x) : x(x) {}
+    friend void A::friend_method(const B& b);
+private:
+    int x;
+};
+
+void A::friend_method(const B& b) {
+    std::cout << b.x << std::endl;
+}
+```
+
 2. Какие возможности есть у друга класса T?
 - Доступ к публичным полям и методам класса T
 - Доступ к приватным полям класса Т
