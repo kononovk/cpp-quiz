@@ -7,6 +7,15 @@
 ---
 ### Версия ядра 3.10:
 ```C
+#if defined(CONFIG_BLK_DEV_INTEGRITY)
+#define bio_integrity(bio) (bio->bi_integrity != NULL)
+#else /* CONFIG_BLK_DEV_INTEGRITY */
+static inline int bio_integrity(struct bio *bio)
+{
+	return 0;
+}
+#endif
+
 /**
  * 	__bio_clone	-	clone a bio
  * 	@bio: destination bio
@@ -74,6 +83,19 @@ static inline struct bio *bio_clone(struct bio *bio, gfp_t gfp_mask)
 ### Версия ядра 5.9
 
 ```C
+#if defined(CONFIG_BLK_DEV_INTEGRITY)
+static inline struct bio_integrity_payload *bio_integrity(struct bio *bio)
+{
+	if (bio->bi_opf & REQ_INTEGRITY)
+		return bio->bi_integrity;
+	return NULL;
+}
+#else
+static inline void *bio_integrity(struct bio *bio)
+{
+	return NULL;
+}
+#endif
 
 void __bio_crypt_clone(struct bio *dst, struct bio *src, gfp_t gfp_mask)
 {
