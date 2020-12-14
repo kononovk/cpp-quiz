@@ -177,18 +177,55 @@ struct bio *bio_clone_fast(struct bio *bio, gfp_t gfp_mask, struct bio_set *bs)
 		
 	__bio_clone_fast(b, bio);
 	bio_crypt_clone(b, bio, gfp_mask);
-	
+    // bio->integrity != NULL
 	if (bio_integrity(bio)) {
 		int ret;
-		ret = bio_integrity_clone(b, bio, gfp_mask);
-		if (ret < 0) {
+		ret = bio_integrity_clone(b, bio, gfp_mask);  // аллокация памяти под bio_integrity_payload
+		// если код возврата < 0 (ошибка) -> уменьшаем ref_count на 1
+		if (ret < 0) {                                
 			bio_put(b);
 			return NULL;
 		}
 	}
 	return b;
 }
-
 ```
+_____
+
+Можно заметить, что `bio_clone` перевыделяет память под странички и копирует их используя `memcpy` (обычное глупокое копирование структуры):
+```C
+b = bio_alloc_bioset(...);
+memcpy(bio->bi_io_vec, bio_src->bi_io_vec, bio_src->bi_max_vecs * (sizeof(struct bio_vec)));
+```
+В `bio_clone_fast` используется счетчик ссылок:
+
+`bio_clone_fast`:
+```C
+b = bio_alloc_bioset(gfp_mask, 0, bs);
+__bio_clone_fast(b, bio);
+```
+`__bio_clone_fast`:
+```C
+bio->bi_io_vec = bio_src->bi_io_vec;
+bio_clone_blkg_association(bio, bio_src);
+```
+`bio_clone_blkg_association`:
+```C
+/**
+ * bio_clone_blkg_association - clone blkg association from src to dst bio
+ * @dst: destination bio
+ * @src: source bio
+ */
+void bio_clone_blkg_association(struct bio *dst, struct bio *src)
+{
+	if (src->bi_blkg) {
+		if (dst->bi_blkg)
+			blkg_put(dst->bi_blkg);
+		blkg_get(src->bi_blkg);
+		dst->bi_blkg = src->bi_blkg;
+	}
+}
+```
+
 
 ## Задача 2
