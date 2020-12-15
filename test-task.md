@@ -192,7 +192,7 @@ struct bio *bio_clone_fast(struct bio *bio, gfp_t gfp_mask, struct bio_set *bs)
 ```
 _____
 
-Можно заметить, что `bio_clone` перевыделяет память под странички и копирует их используя `memcpy` (обычное глупокое копирование структуры):
+Можно заметить, что `bio_clone` перевыделяет память под странички и копирует их используя `memcpy` (deep copy):
 ```C
 b = bio_alloc_bioset(...);
 memcpy(bio->bi_io_vec, bio_src->bi_io_vec, bio_src->bi_max_vecs * (sizeof(struct bio_vec)));
@@ -229,3 +229,143 @@ void bio_clone_blkg_association(struct bio *dst, struct bio *src)
 
 
 ## Задача 2
+```C
+void func(struct bio *bio1, int len, struct bio_set *bs) 
+{ 
+    struct bio* bio2 = bio_split(bio1, len, GFP_NOIO, bs); 
+    bio_chain(bio1, bio2); 
+    submit_bio(bio2); 
+    submit_bio(bio1); 
+} 
+```
+Прочитать код функций `bio_split` и `bio_chain` в ядре версии [5.9](https://elixir.bootlin.com/linux/v5.9.11/source) и ответить на следующий вопрос: Одназначно ли определен порядок вызова функций `bio1->bi_end_io` и `bio2->bi_end_io`.
+
+```C
+/**
+ * submit_bio - submit a bio to the block device layer for I/O
+ * @bio: The &struct bio which describes the I/O
+ *
+ * submit_bio() is used to submit I/O requests to block devices.  It is passed a
+ * fully set up &struct bio that describes the I/O that needs to be done.  The
+ * bio will be send to the device described by the bi_disk and bi_partno fields.
+ *
+ * The success/failure status of the request, along with notification of
+ * completion, is delivered asynchronously through the ->bi_end_io() callback
+ * in @bio.  The bio must NOT be touched by thecaller until ->bi_end_io() has
+ * been called.
+ */
+blk_qc_t submit_bio(struct bio *bio)
+{
+	if (blkcg_punt_bio_submit(bio))
+		return BLK_QC_T_NONE;
+
+	/*
+	 * If it's a regular read/write or a barrier with data attached,
+	 * go through the normal accounting stuff before submission.
+	 */
+	if (bio_has_data(bio)) {
+		unsigned int count;
+
+		if (unlikely(bio_op(bio) == REQ_OP_WRITE_SAME))
+			count = queue_logical_block_size(bio->bi_disk->queue) >> 9;
+		else
+			count = bio_sectors(bio);
+
+		if (op_is_write(bio_op(bio))) {
+			count_vm_events(PGPGOUT, count);
+		} else {
+			task_io_account_read(bio->bi_iter.bi_size);
+			count_vm_events(PGPGIN, count);
+		}
+
+		if (unlikely(block_dump)) {
+			char b[BDEVNAME_SIZE];
+			printk(KERN_DEBUG "%s(%d): %s block %Lu on %s (%u sectors)\n",
+			current->comm, task_pid_nr(current),
+				op_is_write(bio_op(bio)) ? "WRITE" : "READ",
+				(unsigned long long)bio->bi_iter.bi_sector,
+				bio_devname(bio, b), count);
+		}
+	}
+
+	/*
+	 * If we're reading data that is part of the userspace workingset, count
+	 * submission time as memory stall.  When the device is congested, or
+	 * the submitting cgroup IO-throttled, submission can be a significant
+	 * part of overall IO time.
+	 */
+	if (unlikely(bio_op(bio) == REQ_OP_READ `&&` bio_flagged(bio, BIO_WORKINGSET))) {
+		unsigned long pflags;
+		blk_qc_t ret;
+		psi_memstall_enter(&pflags);
+		ret = submit_bio_noacct(bio);
+		psi_memstall_leave(&pflags);
+		return ret;
+	}
+	return submit_bio_noacct(bio);
+}
+
+/**
+ * bio_chain - chain bio completions
+ * @bio: the target bio
+ * @parent: the @bio's parent bio
+ *
+ * The caller won't have a bi_end_io called when @bio completes - instead,
+ * @parent's bi_end_io won't be called until both @parent and @bio have
+ * completed; the chained bio will also be freed when it completes.
+ *
+ * The caller must not set bi_private or bi_end_io in @bio.
+ */
+void bio_chain(struct bio *bio, struct bio *parent)
+{
+	BUG_ON(bio->bi_private || bio->bi_end_io);
+
+	bio->bi_private = parent;
+	bio->bi_end_io	= bio_chain_endio;
+	bio_inc_remaining(parent);
+}
+
+/**
+ * bio_split - split a bio
+ * @bio:	bio to split
+ * @sectors:	number of sectors to split from the front of @bio
+ * @gfp:	gfp mask
+ * @bs:		bio set to allocate from
+ *
+ * Allocates and returns a new bio which represents @sectors from the start of
+ * @bio, and updates @bio to represent the remaining sectors.
+ *
+ * Unless this is a discard request the newly allocated bio will point
+ * to @bio's bi_io_vec. It is the caller's responsibility to ensure that
+ * neither @bio nor @bs are freed before the split bio.
+ */
+struct bio *bio_split(struct bio *bio, int sectors,
+		      gfp_t gfp, struct bio_set *bs)
+{
+	struct bio *split;
+
+	BUG_ON(sectors <= 0);
+	BUG_ON(sectors >= bio_sectors(bio));
+
+	/* Zone append commands cannot be split */
+	if (WARN_ON_ONCE(bio_op(bio) == REQ_OP_ZONE_APPEND))
+		return NULL;
+
+	split = bio_clone_fast(bio, gfp, bs);
+	if (!split)
+		return NULL;
+
+	split->bi_iter.bi_size = sectors << 9;
+
+	if (bio_integrity(split))
+		bio_integrity_trim(split);
+
+	bio_advance(bio, split->bi_iter.bi_size);
+
+	if (bio_flagged(bio, BIO_TRACE_COMPLETION))
+		bio_set_flag(split, BIO_TRACE_COMPLETION);
+
+	return split;
+}
+
+```
